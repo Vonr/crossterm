@@ -13,17 +13,17 @@
 //! Please have a look at [command documentation](../index.html#command-api) for a more detailed documentation.
 //!
 //! ```no_run
-//! use std::io::{stdout, Write};
+//! use std::io::{self, Write};
 //!
 //! use crossterm::{
-//!     ExecutableCommand, execute, Result,
+//!     ExecutableCommand, execute,
 //!     cursor::{DisableBlinking, EnableBlinking, MoveTo, RestorePosition, SavePosition}
 //! };
 //!
-//! fn main() -> Result<()> {
+//! fn main() -> io::Result<()> {
 //!     // with macro
 //!     execute!(
-//!         stdout(),
+//!         io::stdout(),
 //!         SavePosition,
 //!         MoveTo(10, 10),
 //!         EnableBlinking,
@@ -32,7 +32,7 @@
 //!     );
 //!
 //!   // with function
-//!   stdout()
+//!   io::stdout()
 //!     .execute(MoveTo(11,11))?
 //!     .execute(RestorePosition);
 //!
@@ -44,13 +44,12 @@
 
 use std::fmt;
 
-#[cfg(windows)]
-use crate::Result;
 use crate::{csi, impl_display, Command};
 
-pub use sys::position;
-
 pub(crate) mod sys;
+
+#[cfg(feature = "events")]
+pub use sys::position;
 
 /// A command that moves the terminal cursor to the given position (column, row).
 ///
@@ -66,7 +65,7 @@ impl Command for MoveTo {
     }
 
     #[cfg(windows)]
-    fn execute_winapi(&self) -> Result<()> {
+    fn execute_winapi(&self) -> std::io::Result<()> {
         sys::move_to(self.0, self.1)
     }
 }
@@ -88,7 +87,7 @@ impl Command for MoveToNextLine {
     }
 
     #[cfg(windows)]
-    fn execute_winapi(&self) -> Result<()> {
+    fn execute_winapi(&self) -> std::io::Result<()> {
         if self.0 != 0 {
             sys::move_to_next_line(self.0)?;
         }
@@ -113,7 +112,7 @@ impl Command for MoveToPreviousLine {
     }
 
     #[cfg(windows)]
-    fn execute_winapi(&self) -> Result<()> {
+    fn execute_winapi(&self) -> std::io::Result<()> {
         if self.0 != 0 {
             sys::move_to_previous_line(self.0)?;
         }
@@ -136,7 +135,7 @@ impl Command for MoveToColumn {
     }
 
     #[cfg(windows)]
-    fn execute_winapi(&self) -> Result<()> {
+    fn execute_winapi(&self) -> std::io::Result<()> {
         sys::move_to_column(self.0)
     }
 }
@@ -156,7 +155,7 @@ impl Command for MoveToRow {
     }
 
     #[cfg(windows)]
-    fn execute_winapi(&self) -> Result<()> {
+    fn execute_winapi(&self) -> std::io::Result<()> {
         sys::move_to_row(self.0)
     }
 }
@@ -177,7 +176,7 @@ impl Command for MoveUp {
     }
 
     #[cfg(windows)]
-    fn execute_winapi(&self) -> Result<()> {
+    fn execute_winapi(&self) -> std::io::Result<()> {
         sys::move_up(self.0)
     }
 }
@@ -198,7 +197,7 @@ impl Command for MoveRight {
     }
 
     #[cfg(windows)]
-    fn execute_winapi(&self) -> Result<()> {
+    fn execute_winapi(&self) -> std::io::Result<()> {
         sys::move_right(self.0)
     }
 }
@@ -219,7 +218,7 @@ impl Command for MoveDown {
     }
 
     #[cfg(windows)]
-    fn execute_winapi(&self) -> Result<()> {
+    fn execute_winapi(&self) -> std::io::Result<()> {
         sys::move_down(self.0)
     }
 }
@@ -240,7 +239,7 @@ impl Command for MoveLeft {
     }
 
     #[cfg(windows)]
-    fn execute_winapi(&self) -> Result<()> {
+    fn execute_winapi(&self) -> std::io::Result<()> {
         sys::move_left(self.0)
     }
 }
@@ -262,7 +261,7 @@ impl Command for SavePosition {
     }
 
     #[cfg(windows)]
-    fn execute_winapi(&self) -> Result<()> {
+    fn execute_winapi(&self) -> std::io::Result<()> {
         sys::save_position()
     }
 }
@@ -284,7 +283,7 @@ impl Command for RestorePosition {
     }
 
     #[cfg(windows)]
-    fn execute_winapi(&self) -> Result<()> {
+    fn execute_winapi(&self) -> std::io::Result<()> {
         sys::restore_position()
     }
 }
@@ -303,7 +302,7 @@ impl Command for Hide {
     }
 
     #[cfg(windows)]
-    fn execute_winapi(&self) -> Result<()> {
+    fn execute_winapi(&self) -> std::io::Result<()> {
         sys::show_cursor(false)
     }
 }
@@ -322,7 +321,7 @@ impl Command for Show {
     }
 
     #[cfg(windows)]
-    fn execute_winapi(&self) -> Result<()> {
+    fn execute_winapi(&self) -> std::io::Result<()> {
         sys::show_cursor(true)
     }
 }
@@ -331,18 +330,17 @@ impl Command for Show {
 ///
 /// # Notes
 ///
-/// - Windows versions lower than Windows 10 do not support this functionality.
+/// - Some Unix terminals (ex: GNOME and Konsole) as well as Windows versions lower than Windows 10 do not support this functionality.
+///   Use `SetCursorStyle` for better cross-compatibility.
 /// - Commands must be executed/queued for execution otherwise they do nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EnableBlinking;
-
 impl Command for EnableBlinking {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
         f.write_str(csi!("?12h"))
     }
-
     #[cfg(windows)]
-    fn execute_winapi(&self) -> Result<()> {
+    fn execute_winapi(&self) -> std::io::Result<()> {
         Ok(())
     }
 }
@@ -351,54 +349,60 @@ impl Command for EnableBlinking {
 ///
 /// # Notes
 ///
-/// - Windows versions lower than Windows 10 do not support this functionality.
+/// - Some Unix terminals (ex: GNOME and Konsole) as well as Windows versions lower than Windows 10 do not support this functionality.
+///   Use `SetCursorStyle` for better cross-compatibility.
 /// - Commands must be executed/queued for execution otherwise they do nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DisableBlinking;
-
 impl Command for DisableBlinking {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
         f.write_str(csi!("?12l"))
     }
-
     #[cfg(windows)]
-    fn execute_winapi(&self) -> Result<()> {
+    fn execute_winapi(&self) -> std::io::Result<()> {
         Ok(())
     }
 }
 
-/// All supported cursor shapes
-///
-/// # Note
-///
-/// - Used with SetCursorShape
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CursorShape {
-    UnderScore,
-    Line,
-    Block,
-}
-
-/// A command that sets the shape of the cursor
+/// A command that sets the style of the cursor.
+/// It uses two types of escape codes, one to control blinking, and the other the shape.
 ///
 /// # Note
 ///
 /// - Commands must be executed/queued for execution otherwise they do nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SetCursorShape(pub CursorShape);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SetCursorStyle {
+    /// Default cursor shape configured by the user.
+    DefaultUserShape,
+    /// A blinking block cursor shape (■).
+    BlinkingBlock,
+    /// A non blinking block cursor shape (inverse of `BlinkingBlock`).
+    SteadyBlock,
+    /// A blinking underscore cursor shape(_).
+    BlinkingUnderScore,
+    /// A non blinking underscore cursor shape (inverse of `BlinkingUnderScore`).
+    SteadyUnderScore,
+    /// A blinking cursor bar shape (|)
+    BlinkingBar,
+    /// A steady cursor bar shape (inverse of `BlinkingBar`).
+    SteadyBar,
+}
 
-impl Command for SetCursorShape {
+impl Command for SetCursorStyle {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
-        use CursorShape::*;
-        match self.0 {
-            UnderScore => f.write_str("\x1b[3 q"),
-            Line => f.write_str("\x1b[5 q"),
-            Block => f.write_str("\x1b[2 q"),
+        match self {
+            SetCursorStyle::DefaultUserShape => f.write_str("\x1b[0 q"),
+            SetCursorStyle::BlinkingBlock => f.write_str("\x1b[1 q"),
+            SetCursorStyle::SteadyBlock => f.write_str("\x1b[2 q"),
+            SetCursorStyle::BlinkingUnderScore => f.write_str("\x1b[3 q"),
+            SetCursorStyle::SteadyUnderScore => f.write_str("\x1b[4 q"),
+            SetCursorStyle::BlinkingBar => f.write_str("\x1b[5 q"),
+            SetCursorStyle::SteadyBar => f.write_str("\x1b[6 q"),
         }
     }
 
     #[cfg(windows)]
-    fn execute_winapi(&self) -> Result<()> {
+    fn execute_winapi(&self) -> std::io::Result<()> {
         Ok(())
     }
 }
@@ -418,16 +422,17 @@ impl_display!(for Hide);
 impl_display!(for Show);
 impl_display!(for EnableBlinking);
 impl_display!(for DisableBlinking);
-impl_display!(for SetCursorShape);
+impl_display!(for SetCursorStyle);
 
 #[cfg(test)]
+#[cfg(feature = "events")]
 mod tests {
     use std::io::{self, stdout};
 
     use crate::execute;
 
     use super::{
-        position, MoveDown, MoveLeft, MoveRight, MoveTo, MoveUp, RestorePosition, SavePosition,
+        sys::position, MoveDown, MoveLeft, MoveRight, MoveTo, MoveUp, RestorePosition, SavePosition,
     };
 
     // Test is disabled, because it's failing on Travis

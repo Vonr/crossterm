@@ -1,11 +1,8 @@
 use std::io;
 
-use crate::{
-    event::{
-        Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MediaKeyCode,
-        ModifierKeyCode, MouseButton, MouseEvent, MouseEventKind,
-    },
-    ErrorKind, Result,
+use crate::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, KeyboardEnhancementFlags,
+    MediaKeyCode, ModifierKeyCode, MouseButton, MouseEvent, MouseEventKind,
 };
 
 use super::super::super::InternalEvent;
@@ -22,11 +19,14 @@ use super::super::super::InternalEvent;
 // Ok(Some(event)) -> we have event, clear the buffer
 //
 
-fn could_not_parse_event_error() -> ErrorKind {
+fn could_not_parse_event_error() -> io::Error {
     io::Error::new(io::ErrorKind::Other, "Could not parse an event.")
 }
 
-pub(crate) fn parse_event(buffer: &[u8], input_available: bool) -> Result<Option<InternalEvent>> {
+pub(crate) fn parse_event(
+    buffer: &[u8],
+    input_available: bool,
+) -> io::Result<Option<InternalEvent>> {
     if buffer.is_empty() {
         return Ok(None);
     }
@@ -104,11 +104,11 @@ pub(crate) fn parse_event(buffer: &[u8], input_available: bool) -> Result<Option
             KeyCode::Backspace.into(),
         )))),
         c @ b'\x01'..=b'\x1A' => Ok(Some(InternalEvent::Event(Event::Key(KeyEvent::new(
-            KeyCode::Char((c as u8 - 0x1 + b'a') as char),
+            KeyCode::Char((c - 0x1 + b'a') as char),
             KeyModifiers::CONTROL,
         ))))),
         c @ b'\x1C'..=b'\x1F' => Ok(Some(InternalEvent::Event(Event::Key(KeyEvent::new(
-            KeyCode::Char((c as u8 - 0x1C + b'4') as char),
+            KeyCode::Char((c - 0x1C + b'4') as char),
             KeyModifiers::CONTROL,
         ))))),
         b'\0' => Ok(Some(InternalEvent::Event(Event::Key(KeyEvent::new(
@@ -134,8 +134,8 @@ fn char_code_to_event(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, modifiers)
 }
 
-pub(crate) fn parse_csi(buffer: &[u8]) -> Result<Option<InternalEvent>> {
-    assert!(buffer.starts_with(&[b'\x1B', b'['])); // ESC [
+pub(crate) fn parse_csi(buffer: &[u8]) -> io::Result<Option<InternalEvent>> {
+    assert!(buffer.starts_with(b"\x1B[")); // ESC [
 
     if buffer.len() == 2 {
         return Ok(None);
@@ -169,6 +169,19 @@ pub(crate) fn parse_csi(buffer: &[u8]) -> Result<Option<InternalEvent>> {
         b'<' => return parse_csi_sgr_mouse(buffer),
         b'I' => Some(Event::FocusGained),
         b'O' => Some(Event::FocusLost),
+        b';' => return parse_csi_modifier_key_code(buffer),
+        // P, Q, and S for compatibility with Kitty keyboard protocol,
+        // as the 1 in 'CSI 1 P' etc. must be omitted if there are no
+        // modifiers pressed:
+        // https://sw.kovidgoyal.net/kitty/keyboard-protocol/#legacy-functional-keys
+        b'P' => Some(Event::Key(KeyCode::F(1).into())),
+        b'Q' => Some(Event::Key(KeyCode::F(2).into())),
+        b'S' => Some(Event::Key(KeyCode::F(4).into())),
+        b'?' => match buffer[buffer.len() - 1] {
+            b'u' => return parse_csi_keyboard_enhancement_flags(buffer),
+            b'c' => return parse_csi_primary_device_attributes(buffer),
+            _ => None,
+        },
         b'0'..=b'9' => {
             // Numbered escape code.
             if buffer.len() == 3 {
@@ -176,11 +189,15 @@ pub(crate) fn parse_csi(buffer: &[u8]) -> Result<Option<InternalEvent>> {
             } else {
                 // The final byte of a CSI sequence can be in the range 64-126, so
                 // let's keep reading anything else.
-                let last_byte = *buffer.last().unwrap();
+                let last_byte = buffer[buffer.len() - 1];
                 if !(64..=126).contains(&last_byte) {
                     None
                 } else {
-                    match buffer[buffer.len() - 1] {
+                    #[cfg(feature = "bracketed-paste")]
+                    if buffer.starts_with(b"\x1B[200~") {
+                        return parse_csi_bracketed_paste(buffer);
+                    }
+                    match last_byte {
                         b'M' => return parse_csi_rxvt_mouse(buffer),
                         b'~' => return parse_csi_special_key_code(buffer),
                         b'u' => return parse_csi_u_encoded_key_code(buffer),
@@ -196,7 +213,7 @@ pub(crate) fn parse_csi(buffer: &[u8]) -> Result<Option<InternalEvent>> {
     Ok(input_event.map(InternalEvent::Event))
 }
 
-pub(crate) fn next_parsed<T>(iter: &mut dyn Iterator<Item = &str>) -> Result<T>
+pub(crate) fn next_parsed<T>(iter: &mut dyn Iterator<Item = &str>) -> io::Result<T>
 where
     T: std::str::FromStr,
 {
@@ -206,7 +223,7 @@ where
         .map_err(|_| could_not_parse_event_error())
 }
 
-fn modifier_and_kind_parsed(iter: &mut dyn Iterator<Item = &str>) -> Result<(u8, u8)> {
+fn modifier_and_kind_parsed(iter: &mut dyn Iterator<Item = &str>) -> io::Result<(u8, u8)> {
     let mut sub_split = iter
         .next()
         .ok_or_else(could_not_parse_event_error)?
@@ -221,12 +238,12 @@ fn modifier_and_kind_parsed(iter: &mut dyn Iterator<Item = &str>) -> Result<(u8,
     }
 }
 
-pub(crate) fn parse_csi_cursor_position(buffer: &[u8]) -> Result<Option<InternalEvent>> {
+pub(crate) fn parse_csi_cursor_position(buffer: &[u8]) -> io::Result<Option<InternalEvent>> {
     // ESC [ Cy ; Cx R
     //   Cy - cursor row number (starting from 1)
     //   Cx - cursor column number (starting from 1)
-    assert!(buffer.starts_with(&[b'\x1B', b'['])); // ESC [
-    assert!(buffer.ends_with(&[b'R']));
+    assert!(buffer.starts_with(b"\x1B[")); // ESC [
+    assert!(buffer.ends_with(b"R"));
 
     let s = std::str::from_utf8(&buffer[2..buffer.len() - 1])
         .map_err(|_| could_not_parse_event_error())?;
@@ -237,6 +254,50 @@ pub(crate) fn parse_csi_cursor_position(buffer: &[u8]) -> Result<Option<Internal
     let x = next_parsed::<u16>(&mut split)? - 1;
 
     Ok(Some(InternalEvent::CursorPosition(x, y)))
+}
+
+fn parse_csi_keyboard_enhancement_flags(buffer: &[u8]) -> io::Result<Option<InternalEvent>> {
+    // ESC [ ? flags u
+    assert!(buffer.starts_with(b"\x1B[?")); // ESC [ ?
+    assert!(buffer.ends_with(b"u"));
+
+    if buffer.len() < 5 {
+        return Ok(None);
+    }
+
+    let bits = buffer[3];
+    let mut flags = KeyboardEnhancementFlags::empty();
+
+    if bits & 1 != 0 {
+        flags |= KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES;
+    }
+    if bits & 2 != 0 {
+        flags |= KeyboardEnhancementFlags::REPORT_EVENT_TYPES;
+    }
+    if bits & 4 != 0 {
+        flags |= KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS;
+    }
+    if bits & 8 != 0 {
+        flags |= KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES;
+    }
+    // *Note*: this is not yet supported by crossterm.
+    // if bits & 16 != 0 {
+    //     flags |= KeyboardEnhancementFlags::REPORT_ASSOCIATED_TEXT;
+    // }
+
+    Ok(Some(InternalEvent::KeyboardEnhancementFlags(flags)))
+}
+
+fn parse_csi_primary_device_attributes(buffer: &[u8]) -> io::Result<Option<InternalEvent>> {
+    // ESC [ 64 ; attr1 ; attr2 ; ... ; attrn ; c
+    assert!(buffer.starts_with(b"\x1B[?"));
+    assert!(buffer.ends_with(b"c"));
+
+    // This is a stub for parsing the primary device attributes. This response is not
+    // exposed in the crossterm API so we don't need to parse the individual attributes yet.
+    // See <https://vt100.net/docs/vt510-rm/DA1.html>
+
+    Ok(Some(InternalEvent::PrimaryDeviceAttributes))
 }
 
 fn parse_modifiers(mask: u8) -> KeyModifiers {
@@ -251,7 +312,28 @@ fn parse_modifiers(mask: u8) -> KeyModifiers {
     if modifier_mask & 4 != 0 {
         modifiers |= KeyModifiers::CONTROL;
     }
+    if modifier_mask & 8 != 0 {
+        modifiers |= KeyModifiers::SUPER;
+    }
+    if modifier_mask & 16 != 0 {
+        modifiers |= KeyModifiers::HYPER;
+    }
+    if modifier_mask & 32 != 0 {
+        modifiers |= KeyModifiers::META;
+    }
     modifiers
+}
+
+fn parse_modifiers_to_state(mask: u8) -> KeyEventState {
+    let modifier_mask = mask.saturating_sub(1);
+    let mut state = KeyEventState::empty();
+    if modifier_mask & 64 != 0 {
+        state |= KeyEventState::CAPS_LOCK;
+    }
+    if modifier_mask & 128 != 0 {
+        state |= KeyEventState::NUM_LOCK;
+    }
+    state
 }
 
 fn parse_key_event_kind(kind: u8) -> KeyEventKind {
@@ -263,13 +345,34 @@ fn parse_key_event_kind(kind: u8) -> KeyEventKind {
     }
 }
 
-pub(crate) fn parse_csi_modifier_key_code(buffer: &[u8]) -> Result<Option<InternalEvent>> {
-    assert!(buffer.starts_with(&[b'\x1B', b'['])); // ESC [
+pub(crate) fn parse_csi_modifier_key_code(buffer: &[u8]) -> io::Result<Option<InternalEvent>> {
+    assert!(buffer.starts_with(b"\x1B[")); // ESC [
+                                           //
+    let s = std::str::from_utf8(&buffer[2..buffer.len() - 1])
+        .map_err(|_| could_not_parse_event_error())?;
+    let mut split = s.split(';');
 
-    let modifier_mask = buffer[buffer.len() - 2];
+    split.next();
+
+    let (modifiers, kind) =
+        if let Ok((modifier_mask, kind_code)) = modifier_and_kind_parsed(&mut split) {
+            (
+                parse_modifiers(modifier_mask),
+                parse_key_event_kind(kind_code),
+            )
+        } else if buffer.len() > 3 {
+            (
+                parse_modifiers(
+                    (buffer[buffer.len() - 2] as char)
+                        .to_digit(10)
+                        .ok_or_else(could_not_parse_event_error)? as u8,
+                ),
+                KeyEventKind::Press,
+            )
+        } else {
+            (KeyModifiers::NONE, KeyEventKind::Press)
+        };
     let key = buffer[buffer.len() - 1];
-
-    let modifiers = parse_modifiers(modifier_mask);
 
     let keycode = match key {
         b'A' => KeyCode::Up,
@@ -285,7 +388,7 @@ pub(crate) fn parse_csi_modifier_key_code(buffer: &[u8]) -> Result<Option<Intern
         _ => return Err(could_not_parse_event_error()),
     };
 
-    let input_event = Event::Key(KeyEvent::new(keycode, modifiers));
+    let input_event = Event::Key(KeyEvent::new_with_kind(keycode, modifiers, kind));
 
     Ok(Some(InternalEvent::Event(input_event)))
 }
@@ -391,30 +494,50 @@ fn translate_functional_key_code(codepoint: u32) -> Option<(KeyCode, KeyEventSta
     None
 }
 
-pub(crate) fn parse_csi_u_encoded_key_code(buffer: &[u8]) -> Result<Option<InternalEvent>> {
-    assert!(buffer.starts_with(&[b'\x1B', b'['])); // ESC [
-    assert!(buffer.ends_with(&[b'u']));
+pub(crate) fn parse_csi_u_encoded_key_code(buffer: &[u8]) -> io::Result<Option<InternalEvent>> {
+    assert!(buffer.starts_with(b"\x1B[")); // ESC [
+    assert!(buffer.ends_with(b"u"));
 
+    // This function parses `CSI … u` sequences. These are sequences defined in either
+    // the `CSI u` (a.k.a. "Fix Keyboard Input on Terminals - Please", https://www.leonerd.org.uk/hacks/fixterms/)
+    // or Kitty Keyboard Protocol (https://sw.kovidgoyal.net/kitty/keyboard-protocol/) specifications.
+    // This CSI sequence is a tuple of semicolon-separated numbers.
     let s = std::str::from_utf8(&buffer[2..buffer.len() - 1])
         .map_err(|_| could_not_parse_event_error())?;
     let mut split = s.split(';');
 
-    // This CSI sequence a tuple of semicolon-separated numbers.
-    // CSI [codepoint];[modifiers] u
-    // codepoint: ASCII Dec value
-    let codepoint = next_parsed::<u32>(&mut split)?;
+    // In `CSI u`, this is parsed as:
+    //
+    //     CSI codepoint ; modifiers u
+    //     codepoint: ASCII Dec value
+    //
+    // The Kitty Keyboard Protocol extends this with optional components that can be
+    // enabled progressively. The full sequence is parsed as:
+    //
+    //     CSI unicode-key-code:alternate-key-codes ; modifiers:event-type ; text-as-codepoints u
+    let mut codepoints = split
+        .next()
+        .ok_or_else(could_not_parse_event_error)?
+        .split(':');
 
-    let (mut modifiers, kind) =
+    let codepoint = codepoints
+        .next()
+        .ok_or_else(could_not_parse_event_error)?
+        .parse::<u32>()
+        .map_err(|_| could_not_parse_event_error())?;
+
+    let (mut modifiers, kind, state_from_modifiers) =
         if let Ok((modifier_mask, kind_code)) = modifier_and_kind_parsed(&mut split) {
             (
                 parse_modifiers(modifier_mask),
                 parse_key_event_kind(kind_code),
+                parse_modifiers_to_state(modifier_mask),
             )
         } else {
-            (KeyModifiers::NONE, KeyEventKind::Press)
+            (KeyModifiers::NONE, KeyEventKind::Press, KeyEventState::NONE)
         };
 
-    let (keycode, state) = {
+    let (mut keycode, state_from_keycode) = {
         if let Some((special_key_code, state)) = translate_functional_key_code(codepoint) {
             (special_key_code, state)
         } else if let Some(c) = char::from_u32(codepoint) {
@@ -455,20 +578,47 @@ pub(crate) fn parse_csi_u_encoded_key_code(buffer: &[u8]) -> Result<Option<Inter
             ModifierKeyCode::LeftShift | ModifierKeyCode::RightShift => {
                 modifiers.set(KeyModifiers::SHIFT, true)
             }
+            ModifierKeyCode::LeftSuper | ModifierKeyCode::RightSuper => {
+                modifiers.set(KeyModifiers::SUPER, true)
+            }
+            ModifierKeyCode::LeftHyper | ModifierKeyCode::RightHyper => {
+                modifiers.set(KeyModifiers::HYPER, true)
+            }
+            ModifierKeyCode::LeftMeta | ModifierKeyCode::RightMeta => {
+                modifiers.set(KeyModifiers::META, true)
+            }
             _ => {}
         }
     }
 
+    // When the "report alternate keys" flag is enabled in the Kitty Keyboard Protocol
+    // and the terminal sends a keyboard event containing shift, the sequence will
+    // contain an additional codepoint separated by a ':' character which contains
+    // the shifted character according to the keyboard layout.
+    if modifiers.contains(KeyModifiers::SHIFT) {
+        if let Some(shifted_c) = codepoints
+            .next()
+            .and_then(|codepoint| codepoint.parse::<u32>().ok())
+            .and_then(char::from_u32)
+        {
+            keycode = KeyCode::Char(shifted_c);
+            modifiers.set(KeyModifiers::SHIFT, false);
+        }
+    }
+
     let input_event = Event::Key(KeyEvent::new_with_kind_and_state(
-        keycode, modifiers, kind, state,
+        keycode,
+        modifiers,
+        kind,
+        state_from_keycode | state_from_modifiers,
     ));
 
     Ok(Some(InternalEvent::Event(input_event)))
 }
 
-pub(crate) fn parse_csi_special_key_code(buffer: &[u8]) -> Result<Option<InternalEvent>> {
-    assert!(buffer.starts_with(&[b'\x1B', b'['])); // ESC [
-    assert!(buffer.ends_with(&[b'~']));
+pub(crate) fn parse_csi_special_key_code(buffer: &[u8]) -> io::Result<Option<InternalEvent>> {
+    assert!(buffer.starts_with(b"\x1B[")); // ESC [
+    assert!(buffer.ends_with(b"~"));
 
     let s = std::str::from_utf8(&buffer[2..buffer.len() - 1])
         .map_err(|_| could_not_parse_event_error())?;
@@ -477,11 +627,16 @@ pub(crate) fn parse_csi_special_key_code(buffer: &[u8]) -> Result<Option<Interna
     // This CSI sequence can be a list of semicolon-separated numbers.
     let first = next_parsed::<u8>(&mut split)?;
 
-    let modifiers = if let Ok(modifier_mask) = next_parsed::<u8>(&mut split) {
-        parse_modifiers(modifier_mask)
-    } else {
-        KeyModifiers::NONE
-    };
+    let (modifiers, kind, state) =
+        if let Ok((modifier_mask, kind_code)) = modifier_and_kind_parsed(&mut split) {
+            (
+                parse_modifiers(modifier_mask),
+                parse_key_event_kind(kind_code),
+                parse_modifiers_to_state(modifier_mask),
+            )
+        } else {
+            (KeyModifiers::NONE, KeyEventKind::Press, KeyEventState::NONE)
+        };
 
     let keycode = match first {
         1 | 7 => KeyCode::Home,
@@ -498,17 +653,19 @@ pub(crate) fn parse_csi_special_key_code(buffer: &[u8]) -> Result<Option<Interna
         _ => return Err(could_not_parse_event_error()),
     };
 
-    let input_event = Event::Key(KeyEvent::new(keycode, modifiers));
+    let input_event = Event::Key(KeyEvent::new_with_kind_and_state(
+        keycode, modifiers, kind, state,
+    ));
 
     Ok(Some(InternalEvent::Event(input_event)))
 }
 
-pub(crate) fn parse_csi_rxvt_mouse(buffer: &[u8]) -> Result<Option<InternalEvent>> {
+pub(crate) fn parse_csi_rxvt_mouse(buffer: &[u8]) -> io::Result<Option<InternalEvent>> {
     // rxvt mouse encoding:
     // ESC [ Cb ; Cx ; Cy ; M
 
-    assert!(buffer.starts_with(&[b'\x1B', b'['])); // ESC [
-    assert!(buffer.ends_with(&[b'M']));
+    assert!(buffer.starts_with(b"\x1B[")); // ESC [
+    assert!(buffer.ends_with(b"M"));
 
     let s = std::str::from_utf8(&buffer[2..buffer.len() - 1])
         .map_err(|_| could_not_parse_event_error())?;
@@ -530,10 +687,10 @@ pub(crate) fn parse_csi_rxvt_mouse(buffer: &[u8]) -> Result<Option<InternalEvent
     }))))
 }
 
-pub(crate) fn parse_csi_normal_mouse(buffer: &[u8]) -> Result<Option<InternalEvent>> {
+pub(crate) fn parse_csi_normal_mouse(buffer: &[u8]) -> io::Result<Option<InternalEvent>> {
     // Normal mouse encoding: ESC [ M CB Cx Cy (6 characters only).
 
-    assert!(buffer.starts_with(&[b'\x1B', b'[', b'M'])); // ESC [ M
+    assert!(buffer.starts_with(b"\x1B[M")); // ESC [ M
 
     if buffer.len() < 6 {
         return Ok(None);
@@ -558,12 +715,12 @@ pub(crate) fn parse_csi_normal_mouse(buffer: &[u8]) -> Result<Option<InternalEve
     }))))
 }
 
-pub(crate) fn parse_csi_sgr_mouse(buffer: &[u8]) -> Result<Option<InternalEvent>> {
+pub(crate) fn parse_csi_sgr_mouse(buffer: &[u8]) -> io::Result<Option<InternalEvent>> {
     // ESC [ < Cb ; Cx ; Cy (;) (M or m)
 
-    assert!(buffer.starts_with(&[b'\x1B', b'[', b'<'])); // ESC [ <
+    assert!(buffer.starts_with(b"\x1B[<")); // ESC [ <
 
-    if !buffer.ends_with(&[b'm']) && !buffer.ends_with(&[b'M']) {
+    if !buffer.ends_with(b"m") && !buffer.ends_with(b"M") {
         return Ok(None);
     }
 
@@ -616,7 +773,7 @@ pub(crate) fn parse_csi_sgr_mouse(buffer: &[u8]) -> Result<Option<InternalEvent>
 /// - mouse is dragging
 /// - button number
 /// - button number
-fn parse_cb(cb: u8) -> Result<(MouseEventKind, KeyModifiers)> {
+fn parse_cb(cb: u8) -> io::Result<(MouseEventKind, KeyModifiers)> {
     let button_number = (cb & 0b0000_0011) | ((cb & 0b1100_0000) >> 4);
     let dragging = cb & 0b0010_0000 == 0b0010_0000;
 
@@ -631,6 +788,8 @@ fn parse_cb(cb: u8) -> Result<(MouseEventKind, KeyModifiers)> {
         (3, true) | (4, true) | (5, true) => MouseEventKind::Moved,
         (4, false) => MouseEventKind::ScrollUp,
         (5, false) => MouseEventKind::ScrollDown,
+        (6, false) => MouseEventKind::ScrollLeft,
+        (7, false) => MouseEventKind::ScrollRight,
         // We do not support other buttons.
         _ => return Err(could_not_parse_event_error()),
     };
@@ -650,7 +809,20 @@ fn parse_cb(cb: u8) -> Result<(MouseEventKind, KeyModifiers)> {
     Ok((kind, modifiers))
 }
 
-pub(crate) fn parse_utf8_char(buffer: &[u8]) -> Result<Option<char>> {
+#[cfg(feature = "bracketed-paste")]
+pub(crate) fn parse_csi_bracketed_paste(buffer: &[u8]) -> io::Result<Option<InternalEvent>> {
+    // ESC [ 2 0 0 ~ pasted text ESC 2 0 1 ~
+    assert!(buffer.starts_with(b"\x1B[200~"));
+
+    if !buffer.ends_with(b"\x1b[201~") {
+        Ok(None)
+    } else {
+        let paste = String::from_utf8_lossy(&buffer[6..buffer.len() - 6]).to_string();
+        Ok(Some(InternalEvent::Event(Event::Paste(paste))))
+    }
+}
+
+pub(crate) fn parse_utf8_char(buffer: &[u8]) -> io::Result<Option<char>> {
     match std::str::from_utf8(buffer) {
         Ok(s) => {
             let ch = s.chars().next().ok_or_else(could_not_parse_event_error)?;
@@ -773,6 +945,15 @@ mod tests {
             Some(InternalEvent::Event(Event::Key(KeyCode::Delete.into()))),
         );
 
+        // parse_csi_bracketed_paste
+        #[cfg(feature = "bracketed-paste")]
+        assert_eq!(
+            parse_event(b"\x1B[200~on and on and on\x1B[201~", false).unwrap(),
+            Some(InternalEvent::Event(Event::Paste(
+                "on and on and on".to_string()
+            ))),
+        );
+
         // parse_csi_rxvt_mouse
         assert_eq!(
             parse_event(b"\x1B[32;30;40;M", false).unwrap(),
@@ -867,6 +1048,26 @@ mod tests {
                 KeyCode::Delete,
                 KeyModifiers::SHIFT
             )))),
+        );
+    }
+
+    #[cfg(feature = "bracketed-paste")]
+    #[test]
+    fn test_parse_csi_bracketed_paste() {
+        //
+        assert_eq!(
+            parse_event(b"\x1B[200~o", false).unwrap(),
+            None,
+            "A partial bracketed paste isn't parsed"
+        );
+        assert_eq!(
+            parse_event(b"\x1B[200~o\x1B[2D", false).unwrap(),
+            None,
+            "A partial bracketed paste containing another escape code isn't parsed"
+        );
+        assert_eq!(
+            parse_event(b"\x1B[200~o\x1B[2D\x1B[201~", false).unwrap(),
+            Some(InternalEvent::Event(Event::Paste("o\x1B[2D".to_string())))
         );
     }
 
@@ -1166,6 +1367,138 @@ mod tests {
             Some(InternalEvent::Event(Event::Key(KeyEvent::new_with_kind(
                 KeyCode::Modifier(ModifierKeyCode::RightAlt),
                 KeyModifiers::ALT,
+                KeyEventKind::Release,
+            )))),
+        );
+        assert_eq!(
+            parse_csi_u_encoded_key_code(b"\x1B[57450u").unwrap(),
+            Some(InternalEvent::Event(Event::Key(KeyEvent::new(
+                KeyCode::Modifier(ModifierKeyCode::RightSuper),
+                KeyModifiers::SUPER,
+            )))),
+        );
+        assert_eq!(
+            parse_csi_u_encoded_key_code(b"\x1B[57451u").unwrap(),
+            Some(InternalEvent::Event(Event::Key(KeyEvent::new(
+                KeyCode::Modifier(ModifierKeyCode::RightHyper),
+                KeyModifiers::HYPER,
+            )))),
+        );
+        assert_eq!(
+            parse_csi_u_encoded_key_code(b"\x1B[57452u").unwrap(),
+            Some(InternalEvent::Event(Event::Key(KeyEvent::new(
+                KeyCode::Modifier(ModifierKeyCode::RightMeta),
+                KeyModifiers::META,
+            )))),
+        );
+    }
+
+    #[test]
+    fn test_parse_csi_u_encoded_key_code_with_extra_modifiers() {
+        assert_eq!(
+            parse_csi_u_encoded_key_code(b"\x1B[97;9u").unwrap(),
+            Some(InternalEvent::Event(Event::Key(KeyEvent::new(
+                KeyCode::Char('a'),
+                KeyModifiers::SUPER
+            )))),
+        );
+        assert_eq!(
+            parse_csi_u_encoded_key_code(b"\x1B[97;17u").unwrap(),
+            Some(InternalEvent::Event(Event::Key(KeyEvent::new(
+                KeyCode::Char('a'),
+                KeyModifiers::HYPER,
+            )))),
+        );
+        assert_eq!(
+            parse_csi_u_encoded_key_code(b"\x1B[97;33u").unwrap(),
+            Some(InternalEvent::Event(Event::Key(KeyEvent::new(
+                KeyCode::Char('a'),
+                KeyModifiers::META,
+            )))),
+        );
+    }
+
+    #[test]
+    fn test_parse_csi_u_encoded_key_code_with_extra_state() {
+        assert_eq!(
+            parse_csi_u_encoded_key_code(b"\x1B[97;65u").unwrap(),
+            Some(InternalEvent::Event(Event::Key(
+                KeyEvent::new_with_kind_and_state(
+                    KeyCode::Char('a'),
+                    KeyModifiers::empty(),
+                    KeyEventKind::Press,
+                    KeyEventState::CAPS_LOCK,
+                )
+            ))),
+        );
+        assert_eq!(
+            parse_csi_u_encoded_key_code(b"\x1B[49;129u").unwrap(),
+            Some(InternalEvent::Event(Event::Key(
+                KeyEvent::new_with_kind_and_state(
+                    KeyCode::Char('1'),
+                    KeyModifiers::empty(),
+                    KeyEventKind::Press,
+                    KeyEventState::NUM_LOCK,
+                )
+            ))),
+        );
+    }
+
+    #[test]
+    fn test_parse_csi_u_with_shifted_keycode() {
+        assert_eq!(
+            // A-S-9 is equivalent to A-(
+            parse_event(b"\x1B[57:40;4u", false).unwrap(),
+            Some(InternalEvent::Event(Event::Key(KeyEvent::new(
+                KeyCode::Char('('),
+                KeyModifiers::ALT,
+            )))),
+        );
+        assert_eq!(
+            // A-S-minus is equivalent to A-_
+            parse_event(b"\x1B[45:95;4u", false).unwrap(),
+            Some(InternalEvent::Event(Event::Key(KeyEvent::new(
+                KeyCode::Char('_'),
+                KeyModifiers::ALT,
+            )))),
+        );
+    }
+
+    #[test]
+    fn test_parse_csi_special_key_code_with_types() {
+        assert_eq!(
+            parse_event(b"\x1B[;1:3B", false).unwrap(),
+            Some(InternalEvent::Event(Event::Key(KeyEvent::new_with_kind(
+                KeyCode::Down,
+                KeyModifiers::empty(),
+                KeyEventKind::Release,
+            )))),
+        );
+        assert_eq!(
+            parse_event(b"\x1B[1;1:3B", false).unwrap(),
+            Some(InternalEvent::Event(Event::Key(KeyEvent::new_with_kind(
+                KeyCode::Down,
+                KeyModifiers::empty(),
+                KeyEventKind::Release,
+            )))),
+        );
+    }
+
+    #[test]
+    fn test_parse_csi_numbered_escape_code_with_types() {
+        assert_eq!(
+            parse_event(b"\x1B[5;1:3~", false).unwrap(),
+            Some(InternalEvent::Event(Event::Key(KeyEvent::new_with_kind(
+                KeyCode::PageUp,
+                KeyModifiers::empty(),
+                KeyEventKind::Release,
+            )))),
+        );
+        assert_eq!(
+            parse_event(b"\x1B[6;5:3~", false).unwrap(),
+            Some(InternalEvent::Event(Event::Key(KeyEvent::new_with_kind(
+                KeyCode::PageDown,
+                KeyModifiers::CONTROL,
                 KeyEventKind::Release,
             )))),
         );

@@ -1,6 +1,110 @@
+# Unreleased
+
+# Version 0.28.1
+
+## Fixed 🐛
+
+- Fix broken build on linux when using `use-dev-tty` with (#906)
+
+## Breaking ⚠️
+
+- Fix desync with mio and signalhook between repo and published crate. (upgrade to mio 1.0)
+
+# Version 0.28
+
+## Added ⭐
+
+- Capture double click mouse events on windows (#826)
+- (De)serialize Reset color (#824)
+- Add functions to allow constructing `Attributes` in a const context (#817)
+- Implement `Display` for `KeyCode` and `KeyModifiers` (#862)
+
+## Changed ⚙️
+
+- Use Rustix by default instead of libc. Libc can be re-enabled if necessary with the `libc` feature flag (#892)
+- `FileDesc` now requires a lifetime annotation.
+- Improve available color detection (#885)
+- Speed up `SetColors` by ~15-25% (#879)
+- Remove unsafe and unnecessary size argument from `FileDesc::read()` (#821)
+
+## Breaking ⚠️
+
+- Fix duplicate bit masks for caps lock and num lock (#863).
+  This breaks serialization of `KeyEventState`
+
+# Version 0.27.1
+
+## Added ⭐
+- Add support for (de)serializing `Reset` `Color`
+
+# Version 0.27
+
+## Added ⭐
+
+- Add `NO_COLOR` support (https://no-color.org/)
+- Add option to force overwrite `NO_COLOR` (#802)
+- Add support for scroll left/right events on windows and unix systems (#788).
+- Add `window_size` function to fetch pixel width/height of screen for more sophisticated rendering in terminals.
+- Add support for deserializing hex color strings to `Color` e.g #fffff.
+
+## Changed ⚙️
+
+- Make the events module an optional feature `events` (to make crossterm more lightweight) (#776)
+
+## Breaking ⚠️
+
+- Set minimum rustc version to 1.58 (#798)
+- Change all error types to `std::io::Result` (#765)
+
+# Version 0.26.1
+
+## Added ⭐
+
+- Add synchronized output/update control (#756)
+- Add kitty report alternate keys functionality (#754)
+- Updates dev dependencies.
+
+## Fixed 🐛
+- Fix icorrect return in kitty keyboard enhancement check (#751)
+- Fix panic when using `use-dev-tty` feature flag (#762)
+
+# Version 0.26.0
+## Added ⭐
+
+- Add `SetCursorStyle` to set the cursor apearance and visibility. (#742)
+- Add a function to check if kitty keyboard enhancement protocol is available. (#732)
+- Add filedescriptors poll in order to move away from mio in the future (can be used via `use-dev-tty`). (#735)
+
+## Fixed 🐛
+- Improved F1-F4 handling for kitty keyboard protocol. (#736)
+- Improved parsing of event types/modifiers with certain keys for kitty protocol. (#716)
+
+## Breaking ⚠️
+- Remove `SetCursorShape` in favour of `SetCursorStyle`.  (#742)
+- Make Windows resize event match `terminal::size` (#714)
+- Rust 1.58 or later is now required.
+- Add key release event for windows. (#745)
+
+# Version 0.25.0
+BREAKING: `Copy` trait is removed from `Event`, you can keep it by removing the "bracked-paste" feature flag. However this flag might be standardized in the future.
+We removed the `Copy` from `Event` because the new `Paste` event, which contains a pasted string into the terminal, which is a non-copy string.
+
+- Add ability to paste a string in into the terminal and fetch the pasted string via events (see `Event::Paste` and `EnableBracketedPaste `).
+- Add support for functional key codes from kitty keyboard protocol. Try out by `PushKeyboardEnhancementFlags`. This protocol allows for:
+  - See: https://sw.kovidgoyal.net/kitty/keyboard-protocol/#modifiers
+  - Press, Repeat, Release event kinds.
+  - SUPER, HYPER, META modifiers.
+  - Media keycodes
+  - Right/left SHIFT, Control, Alt, Super, Hyper, Meta
+  - IsoLevel3Shift, IsoLevel5Shift
+  - Capslock, scroll lock, numlock
+  - Printscreen, pauze, menue, keyboard begin.
+- Create `SetStyle` command to allow setting various styling in one command.
+- Terminal Focus events (see `Event::FocusGained` and `Event::FocusLost`)
+
 # Version 0.24.0
 - Add  DoubleUnderlined, Undercurled, Underdots the text, Underdotted, Underdashes, Underdashed attributes and allow coloring their foreground / background color.
-- Fix windows unicode character parsing, this fixed various key combinations and support typing unicode characters. 
+- Fix windows unicode character parsing, this fixed various key combinations and support typing unicode characters.
 - Consistency and better documentation on mouse cursor operations (BREAKING CHANGE).
   - MoveTo, MoveToColumn, MoveToRow are 0-based. (left top most cell is 0,0). Moving like this is absolute
   - MoveToNextLine, MoveToPreviousLine, MoveUp, MoveDown, MoveRight, MoveLeft are 1-based,. Moving like this is relative. Moving 1 left means moving 1 left. Moving 0 to the left is not possible, wikipedia states that most terminals will just default to 1.
@@ -8,7 +112,7 @@
 - Remove println from serialisation code.
 - Fix mouse up for middle and right buttons.
 - Fix escape codes on Git-Bash + Windows Terminal / Alacritty / WezTerm.
-- Add support for cursor keys in application mode. 
+- Add support for cursor keys in application mode.
 # Version 0.23.2
 - Update signal-hook and mio to version 0.8.
 
@@ -33,12 +137,12 @@
 
 # Version 0.21
 - Expose `is_raw` function.
-- Add 'purge' option on unix system, this clears the entire screen buffer. 
+- Add 'purge' option on unix system, this clears the entire screen buffer.
 - Improve serialisation for color enum values.
 
 # Version 0.20
-- Update from signal-hook with 'mio-feature flag' to signal-hook-mio 0.2.1. 
-- Manually implements Eq, PartialEq and Hash for KeyEvent improving equality checks and hash calculation. 
+- Update from signal-hook with 'mio-feature flag' to signal-hook-mio 0.2.1.
+- Manually implements Eq, PartialEq and Hash for KeyEvent improving equality checks and hash calculation.
 - `crossterm::ErrorKind` to `io::Error`.
 - Added Cursor Shape Support.
 - Add support for function keys F13...F20.
@@ -47,9 +151,9 @@
 - Remove extra Clone bounds in the style module.
  - Add `MoveToRow` command.
  - Remove writer parameter from execute_winapi
-   
+
 # Version 0.19
-- Use single thread for async event reader. 
+- Use single thread for async event reader.
 - Patch timeout handling for event polling this was not working correctly.
 - Add unix support for more key combinations mainly complex ones with ALT/SHIFT/CTRL.
 - Derive `PartialEq` and `Eq` for ContentStyle
@@ -59,13 +163,13 @@
 # Version 0.18.2
 - Fix panic when only setting bold and redirecting stdout.
 - Use `tty_fd` for set/get terminal attributes
- 
+
 # Version 0.18.1
 - Fix enabling ANSI support when stdout is redirected
 - Update crossterm-winapi to 0.6.2
 
 # Version 0.18.0
-- Fix get position bug 
+- Fix get position bug
 - Fix windows 8 or lower write to user-given stdout instead of stdout.
 - Make MoveCursor(Left/Right/Up/Dow) command with input 0 not move.
 - Switch to futures-core to reduce dependencies.
@@ -77,13 +181,13 @@
 - Fix cursor position retrieval bug linux.
 
 # Version 0.17.6
-- Add functionality to retrieve color based on passed ansi code. 
+- Add functionality to retrieve color based on passed ansi code.
 - Switch from 'futures' to 'futures-util' crate to reduce dependency count
 - Mio 0.7 update
 - signal-hook update
 - Make windows raw_mode act on CONIN$
 - Added From<(u8, u8, u8)> Trait to Color::Rgb Enum
-- Implement Color::try_from() 
+- Implement Color::try_from()
 - Implement styler traits for `&'a str`
 
 # Version 0.17.5
@@ -92,14 +196,14 @@
 - Mio 0.7 update
 
 # Version 0.17.4
-- Add macros for `Colorize` and `Styler` impls, add an impl for `String` 
-- Add shift modifier to uppercase char events on unix 
+- Add macros for `Colorize` and `Styler` impls, add an impl for `String`
+- Add shift modifier to uppercase char events on unix
 
 # Version 0.17.3
 - Fix get terminal size mac os, this did not report the correct size.
 
 # Version 0.17.2
-- Windows unicode support 
+- Windows unicode support
 
 # Version 0.17.1
 - Reverted bug in 0.17.0: "Make terminal size function fallback to `STDOUT_FILENO` if `/dev/tty` is missing.".
@@ -109,18 +213,18 @@
 - Impl Display for MoveToColumn, MoveToNextLine, MoveToPreviousLine
 - Make unix event reader always use `/dev/tty`.
 - Direct write command ansi_codes into formatter instead of double allocation.
-- Add NONE flag to KeyModifiers 
+- Add NONE flag to KeyModifiers
 - Add support for converting chars to StylizedContent
 - Make terminal size function fallback to `STDOUT_FILENO` if `/dev/tty` is missing.
 
 # Version 0.16.0
 - Change attribute vector in `ContentStyle` to bitmask.
 - Add `SetAttributes` command.
-- Add `Attributes` type, which is a bitfield of enabled attributes. 
+- Add `Attributes` type, which is a bitfield of enabled attributes.
 - Remove `exit()`, was useless.
 
 # Version 0.15.0
-- Fix CTRL + J key combination. This used to return an ENTER event. 
+- Fix CTRL + J key combination. This used to return an ENTER event.
 - Add a generic implementation `Command` for `&T: Command`. This allows commands to be queued by reference, as well as by value.
 - Remove unnecessary `Clone` trait bounds from `StyledContent`.
 - Add `StyledContent::style_mut`.

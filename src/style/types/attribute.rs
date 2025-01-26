@@ -22,7 +22,7 @@ macro_rules! Attribute {
         /// * Only UNIX and Windows 10 terminals do support text attributes.
         /// * Keep in mind that not all terminals support all attributes.
         /// * Crossterm implements almost all attributes listed in the
-        ///   [SGR parameters](https://en.wikipedia.org/wiki/ANSI_escape_code#SGR_parameters).
+        ///   [SGR parameters](https://en.wikipedia.org/wiki/ANSI_escape_code#Select_Graphic_Rendition_parameters).
         ///
         /// | Attribute | Windows | UNIX | Notes |
         /// | :-- | :--: | :--: | :-- |
@@ -154,7 +154,7 @@ Attribute! {
 }
 
 impl Display for Attribute {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", SetAttribute(*self))?;
         Ok(())
     }
